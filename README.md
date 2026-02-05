@@ -1,76 +1,136 @@
-# AG ANALYZER
+# AG Analyzer - Live Trading Bot
 
-AI-driven trading analyzer and trading bot built for TradeLocker.
+AI-driven forex trading bot built for TradeLocker.
 
-## Overview
+## What It Does
 
-A production-grade system that:
-1. Ingests market data (FX + indices)
-2. Runs multi-factor analysis (strength, structure, liquidity, momentum)
-3. Produces ranked trade candidates with explainable reason codes
-4. Uses AI as a decision gate + weight tuner
-5. Executes trades automatically on TradeLocker
-6. Logs, audits, monitors, and learns from outcomes
+1. **Scans 27 forex pairs** every ~2.5 minutes
+2. **Analyzes market structure** (trend, liquidity, momentum)
+3. **Generates trade setups** with confluence scoring
+4. **AI gate filters** - Only takes trades with P(win) > 55% and positive E[R]
+5. **Executes automatically** on TradeLocker with SL/TP
+6. **Manages risk** - Position limits, cooldowns, exposure caps
+
+## Current Status
+
+- **Live on production server** (DigitalOcean)
+- **Trading forex only** (28 pairs)
+- **Not trading crypto/indices** (model not trained on these)
+
+## Quick Start
+
+```bash
+# Clone
+git clone https://github.com/Harmonyone1/ag-analysis-live.git
+cd ag-analysis-live
+
+# Configure
+cp .env.example .env
+# Edit .env with your TradeLocker credentials
+
+# Deploy
+docker-compose up -d
+
+# Monitor
+docker logs -f ag_analyzer_engine
+```
 
 ## Architecture
 
 ```
-┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│   Next.js   │────▶│   FastAPI   │────▶│   Engine    │
-│     UI      │◀────│   Backend   │◀────│  (Python)   │
-└─────────────┘     └─────────────┘     └─────────────┘
-                           │                   │
-                           ▼                   ▼
-                    ┌─────────────┐     ┌─────────────┐
-                    │  Supabase   │     │ TradeLocker │
-                    │  (Postgres) │     │     API     │
-                    └─────────────┘     └─────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                     Trading Engine                          │
+├─────────────────────────────────────────────────────────────┤
+│  Market Data → Analysis → Scoring → AI Gate → Execution     │
+│       ↓            ↓          ↓         ↓          ↓        │
+│   TradeLocker   Structure  Confluence  ML Model  Orders     │
+│   M15/H1/H4     Liquidity   Score      P(win)    SL/TP      │
+│                 Momentum    Reasons    E[R]                  │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-## Components
+## Documentation
 
-- **engine/** - Python trading engine (analysis, scoring, AI gate, execution)
-- **backend/** - FastAPI REST API + WebSocket server
-- **ui/** - Next.js trader dashboard
-- **supabase/** - Database migrations and configuration
+- **[Deployment Guide](docs/DEPLOYMENT.md)** - Server setup and deployment
+- **[Trading Logic](docs/TRADING_LOGIC.md)** - How the bot makes decisions
+- **[Configuration](docs/CONFIGURATION.md)** - All settings and options
+- **[Architecture](docs/ARCHITECTURE.md)** - System design
 
-## Quick Start
+## Key Files
 
-### Prerequisites
-- Python 3.11+
-- Node.js 18+
-- Docker & Docker Compose
-- TradeLocker account
+```
+ag-analysis-live/
+├── engine/
+│   ├── src/
+│   │   ├── main.py           # Main trading loop
+│   │   ├── ai/gate.py        # AI decision gate
+│   │   ├── analysis/         # Market analysis
+│   │   ├── scoring/          # Confluence scoring
+│   │   ├── execution/        # Trade execution
+│   │   └── adapters/         # TradeLocker API
+│   └── Dockerfile
+├── backend/                   # REST API
+├── models/                    # AI model files
+├── docker-compose.yml
+└── .env                       # Configuration
+```
 
-### Development Setup
+## Monitoring
 
-1. Clone the repository:
+### View Live Trades
 ```bash
-git clone https://github.com/Harmonyone1/AG-ANALYZER.git
-cd AG-ANALYZER
+docker logs ag_analyzer_engine 2>&1 | grep "\[EXEC\]"
 ```
 
-2. Copy environment template:
+### Check AI Decisions
 ```bash
-cp .env.example .env
+docker logs ag_analyzer_engine 2>&1 | grep "\[AI_GATE\]"
 ```
 
-3. Configure your environment variables in `.env`
-
-4. Start with Docker Compose:
+### Account Status
 ```bash
-docker-compose up -d
+docker exec ag_analyzer_engine python3 -c "
+from tradelocker import TLAPI
+import os
+tl = TLAPI(
+    environment=os.environ.get('TL_ENVIRONMENT'),
+    username=os.environ.get('TL_EMAIL'),
+    password=os.environ.get('TL_PASSWORD'),
+    server=os.environ.get('TL_SERVER'),
+    acc_num=1
+)
+state = tl.get_account_state()
+print(f'Balance: \${state[\"balance\"]:.2f}')
+print(f'Today P&L: \${state[\"todayNet\"]:.2f}')
+"
 ```
 
-5. Run database migrations:
-```bash
-cd supabase && supabase db push
+## Log Examples
+
+```
+[AI_GATE] EURUSD LONG: P(win)=0.6234 E[R]=0.0521 → APPROVED
+[EXEC] OPENED EURUSD LONG qty=0.10 @ 1.08542 SL=1.08142 TP=1.09342
+[EXEC] SKIP GBPUSD: cooldown after loss (closed 07:26 UTC, pnl=-12.50)
+[AI_GATE] AUDJPY SHORT: P(win)=0.4521 E[R]=-0.1200 → REJECTED
 ```
 
-## Environment Variables
+## Risk Controls
 
-See `.env.example` for all required configuration options.
+- **Max 1% risk per trade**
+- **Max 5 concurrent positions**
+- **4-hour cooldown after loss** (per symbol)
+- **Minimum 20 pip stop distance**
+- **Minimum 1.5:1 risk:reward**
+
+## Adding Crypto/Indices
+
+The model was trained on forex only. To add ETHUSD, BTCUSD, or indices:
+
+1. Collect training data for those instruments
+2. Retrain the AI model
+3. Add symbols to `SYMBOLS` list in `main.py`
+4. Redeploy
 
 ## License
 
-Private - All rights reserved
+Private repository - not for redistribution.
