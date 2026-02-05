@@ -1,0 +1,157 @@
+{
+  "sessions": [
+    {
+      "session": {
+        "start_time": "2025-12-16T11:21:41.568623",
+        "end_time": "2025-12-16T11:28:23.228753",
+        "duration_minutes": 6.6943356666666665,
+        "cycles": 9,
+        "lower_thresholds": true
+      },
+      "account": {
+        "starting_balance": 968.42,
+        "ending_balance": 0,
+        "pnl": 0
+      },
+      "activity": {
+        "setups_found": 23,
+        "approved": 11,
+        "rejected": 0,
+        "orders_placed": 2
+      },
+      "trades": [
+        {
+          "order_id": 7493989779963182052,
+          "symbol": "USDJPY",
+          "direction": "SHORT",
+          "quantity": 0.01,
+          "ai_probability": 0.4456016421318054,
+          "ai_expected_r": 3991.05908203125,
+          "confluence_score": 64,
+          "stop_price": 155.01003636363637,
+          "tp_price": 154.64324,
+          "timestamp": "2025-12-16T11:21:53.561583"
+        },
+        {
+          "order_id": 7493989779963182306,
+          "symbol": "AUDUSD",
+          "direction": "LONG",
+          "quantity": 0.16,
+          "ai_probability": 0.4491913914680481,
+          "ai_expected_r": 1.2033931016921997,
+          "confluence_score": 61,
+          "stop_price": 0.663188,
+          "tp_price": 0.66424,
+          "timestamp": "2025-12-16T11:23:23.156187"
+        }
+      ]
+    },
+    {
+      "session": {
+        "start_time": "2025-12-16T17:27:13.272701",
+        "end_time": "2025-12-16T19:28:16.093656",
+        "duration_minutes": 121.04701598333332,
+        "cycles": 119,
+        "lower_thresholds": false
+      },
+      "account": {
+        "starting_balance": 814.43,
+        "ending_balance": 0,
+        "pnl": 0
+      },
+      "activity": {
+        "setups_found": 1188,
+        "approved": 10,
+        "rejected": 1173,
+        "orders_placed": 7
+      },
+      "trades": [
+        {
+          "order_id": 7493989779963210583,
+          "symbol": "EURUSD",
+          "direction": "LONG",
+          "quantity": 0.18,
+          "ai_probability": 0.7720369100570679,
+          "ai_expected_r": 0.18189172446727753,
+          "confluence_score": 78,
+          "stop_price": 1.17343528,
+          "tp_price": 1.17532,
+          "timestamp": "2025-12-16T17:27:24.019661"
+        },
+        {
+          "order_id": 7493989779963210589,
+          "symbol": "GBPUSD",
+          "direction": "SHORT",
+          "quantity": 0.16,
+          "ai_probability": 0.7669157385826111,
+          "ai_expected_r": 0.29360902309417725,
+          "confluence_score": 80,
+          "stop_price": 1.3436346666666665,
+          "tp_price": null,
+          "timestamp": "2025-12-16T17:27:27.969853"
+        },
+        {
+          "order_id": 7493989779963210592,
+          "symbol": "USDJPY",
+          "direction": "LONG",
+          "quantity": 0.12,
+          "ai_probability": 0.7823113203048706,
+          "ai_expected_r": 0.6521784067153931,
+          "confluence_score": 81,
+          "stop_price": 154.5566090909091,
+          "tp_price": 155.02122,
+          "timestamp": "2025-12-16T17:27:32.140900"
+        },
+        {
+          "order_id": 7493989779963210600,
+          "symbol": "NZDUSD",
+          "direction": "LONG",
+          "quantity": 0.5,
+          "ai_probability": 0.9000617861747742,
+          "ai_expected_r": 0.6568266153335571,
+          "confluence_score": 81,
+          "stop_price": 0.5772378888888889,
+          "tp_price": 0.57864,
+          "timestamp": "2025-12-16T17:27:39.277636"
+        },
+        {
+          "order_id": 7493989779963211088,
+          "symbol": "USDJPY",
+          "direction": "LONG",
+          "quantity": 0.16,
+          "ai_probability": 0.889997661113739,
+          "ai_expected_r": 0.8251634240150452,
+          "confluence_score": 81,
+          "stop_price": 154.5566090909091,
+          "tp_price": 155.02122,
+          "timestamp": "2025-12-16T17:55:28.981748"
+        },
+        {
+          "order_id": 7493989779963211099,
+          "symbol": "NZDUSD",
+          "direction": "LONG",
+          "quantity": 0.56,
+          "ai_probability": 0.8408328294754028,
+          "ai_expected_r": 0.8245419263839722,
+          "confluence_score": 79,
+          "stop_price": 0.5772355,
+          "tp_price": 0.57868,
+          "timestamp": "2025-12-16T17:55:36.028014"
+        },
+        {
+          "order_id": 7493989779963211238,
+          "symbol": "EURUSD",
+          "direction": "LONG",
+          "quantity": 0.16,
+          "ai_probability": 0.7418707609176636,
+          "ai_expected_r": 0.22141492366790771,
+          "confluence_score": 78,
+          "stop_price": 1.17343528,
+          "tp_price": 1.17532,
+          "timestamp": "2025-12-16T18:00:57.726859"
+        }
+      ]
+    }
+  ],
+  "last_updated": "2025-12-16T19:28:16.116630"
+}

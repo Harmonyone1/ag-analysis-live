@@ -1,0 +1,247 @@
+#!/usr/bin/env python
+"""Run AI model training outside of Docker.
+
+Usage: python run_training.py
+"""
+
+import sys
+import os
+import logging
+
+# Set up paths
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+os.chdir(os.path.dirname(os.path.abspath(__file__)))
+
+from datetime import datetime
+from dotenv import load_dotenv
+import structlog
+
+# Configure basic logging
+logging.basicConfig(
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    level=logging.INFO
+)
+
+# Configure structlog
+structlog.configure(
+    processors=[
+        structlog.stdlib.add_log_level,
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.dev.ConsoleRenderer()
+    ],
+    wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
+    context_class=dict,
+    logger_factory=structlog.PrintLoggerFactory(),
+    cache_logger_on_first_use=True,
+)
+
+logger = structlog.get_logger(__name__)
+
+
+def main():
+    """Run the full training pipeline."""
+    # Load environment
+    env_path = os.path.join(os.path.dirname(__file__), '..', '.env')
+    load_dotenv(env_path)
+
+    # Set model path for local environment
+    model_dir = os.path.join(os.path.dirname(__file__), '..', 'models')
+    os.environ['MODEL_PATH'] = model_dir
+    os.makedirs(model_dir, exist_ok=True)
+
+    from src.config import load_config
+    from src.adapters import TradeLockerAdapter
+    from src.ai.backtest import BacktestEngine, BacktestConfig
+    from src.ai.label_engine import ExecutionConfig
+    from src.ai.training_pipeline import TrainingPipeline, TrainingConfig
+
+    # Load config
+    config = load_config(env_path)
+
+    # Connect to TradeLocker
+    logger.info("Connecting to TradeLocker...")
+    broker = TradeLockerAdapter(
+        environment=config.tradelocker.environment,
+        email=config.tradelocker.email,
+        password=config.tradelocker.password,
+        server=config.tradelocker.server,
+        acc_num=0,
+        account_id=config.tradelocker.acc_num,
+    )
+
+    if not broker.connect():
+        logger.error("Failed to connect to TradeLocker")
+        return None
+
+    account = broker.get_account()
+    logger.info(f"Connected: {account.account_name}, Balance: {account.balance}")
+
+    # Configure backtest - Extended for 1000+ samples
+    # All 28 major and cross forex pairs
+    all_pairs = [
+        # Majors (7)
+        "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "NZDUSD", "USDCAD",
+        # EUR crosses (6)
+        "EURGBP", "EURJPY", "EURAUD", "EURNZD", "EURCAD", "EURCHF",
+        # GBP crosses (5)
+        "GBPJPY", "GBPAUD", "GBPNZD", "GBPCAD", "GBPCHF",
+        # AUD/NZD crosses (4)
+        "AUDJPY", "AUDNZD", "AUDCAD", "AUDCHF",
+        # NZD crosses (2)
+        "NZDCAD", "NZDCHF",
+        # CAD/CHF/JPY crosses (4)
+        "CADJPY", "CHFJPY", "CADCHF",
+    ]
+
+    backtest_config = BacktestConfig(
+        symbols=all_pairs,
+        timeframe="M15",
+        lookback_bars=2000,  # ~20 days of M15 data for more samples
+        analysis_lookback=200,
+        min_confluence_score=50,  # Lower threshold to capture more candidates
+        skip_bars_after_signal=6,  # 1.5 hours on M15 - tighter to get more samples
+    )
+
+    # Execution config must match live trading
+    execution_config = ExecutionConfig(
+        entry_type="market",
+        entry_slippage_pips=0.5,
+        spread_pips=1.2,
+        default_tp_r=2.0,
+        timeout_bars=96,  # 24 hours on M15
+    )
+
+    # Run backtest
+    logger.info("Running backtest to generate training data...")
+    logger.info(f"Symbols: {backtest_config.symbols}")
+    logger.info(f"Lookback: {backtest_config.lookback_bars} bars")
+
+    backtest_engine = BacktestEngine(broker, backtest_config, execution_config)
+
+    try:
+        result = backtest_engine.run()
+    except Exception as e:
+        logger.error(f"Backtest failed: {e}")
+        broker.disconnect()
+        return None
+
+    logger.info("Backtest Statistics:")
+    for key, value in result.statistics.items():
+        if isinstance(value, float):
+            logger.info(f"  {key}: {value:.4f}")
+        else:
+            logger.info(f"  {key}: {value}")
+
+    if len(result.labels) < 100:
+        logger.error(f"Insufficient training data: {len(result.labels)} samples (need 100+)")
+        logger.info("Try lowering min_confluence_score or adding more symbols")
+        broker.disconnect()
+        return None
+
+    if len(result.labels) < 500:
+        logger.warning(f"Low training data: {len(result.labels)} samples (target: 1000+)")
+        logger.info("Model may underperform. Consider running extended backtest.")
+
+    # Train model with config optimized for dataset size
+    logger.info("Training model...")
+    n_samples = len(result.labels)
+
+    # Adjust hyperparameters based on dataset size
+    if n_samples >= 1000:
+        # Large dataset - can use more complex model
+        n_estimators = 200
+        max_depth = 8
+        learning_rate = 0.05
+    elif n_samples >= 500:
+        # Medium dataset
+        n_estimators = 150
+        max_depth = 6
+        learning_rate = 0.08
+    else:
+        # Small dataset - prevent overfitting
+        n_estimators = 100
+        max_depth = 4
+        learning_rate = 0.1
+
+    logger.info(f"Dataset size: {n_samples} samples")
+    logger.info(f"Using: n_estimators={n_estimators}, max_depth={max_depth}, lr={learning_rate}")
+
+    training_config = TrainingConfig(
+        model_type="xgboost",
+        n_estimators=n_estimators,
+        max_depth=max_depth,
+        learning_rate=learning_rate,
+        train_ratio=0.65,
+        val_ratio=0.20,
+        test_ratio=0.15,
+        calibrate=True,
+        feature_version="v2.0.0",  # Updated version with fixed features
+    )
+
+    pipeline = TrainingPipeline(training_config)
+    pipeline.load_data(
+        features=result.features,
+        labels_class=result.labels_class,
+        labels_r=result.labels_r,
+        timestamps=result.timestamps,
+        feature_names=result.feature_names,
+    )
+
+    # Skip walk-forward if too few samples
+    if len(result.labels) >= 100:
+        logger.info("Running walk-forward validation...")
+        try:
+            wf_results = pipeline.walk_forward_validate()
+            logger.info(f"Walk-forward results: {wf_results}")
+        except Exception as e:
+            logger.warning(f"Walk-forward failed: {e}")
+
+    # Train final model
+    logger.info("Training final model...")
+    try:
+        metrics = pipeline.train()
+    except Exception as e:
+        logger.error(f"Training failed: {e}")
+        broker.disconnect()
+        return None
+
+    logger.info("Training Results:")
+    for key, value in metrics.items():
+        if isinstance(value, float):
+            logger.info(f"  {key}: {value:.4f}")
+        else:
+            logger.info(f"  {key}: {value}")
+
+    # Save model
+    version = f"v1.0.0-{datetime.now().strftime('%Y%m%d%H%M')}"
+    saved_paths = pipeline.save(model_dir, version)
+
+    logger.info(f"Model saved to {model_dir}")
+    logger.info(f"Version: {version}")
+    for name, path in saved_paths.items():
+        logger.info(f"  {name}: {path}")
+
+    # Disconnect
+    broker.disconnect()
+
+    return {
+        "version": version,
+        "metrics": metrics,
+        "statistics": result.statistics,
+        "samples": len(result.labels),
+        "model_paths": saved_paths,
+    }
+
+
+if __name__ == "__main__":
+    result = main()
+    if result:
+        print("\n" + "="*50)
+        print("TRAINING COMPLETE")
+        print("="*50)
+        print(f"Version: {result['version']}")
+        print(f"Samples: {result['samples']}")
+        print(f"Models saved to: {result['model_paths']}")
+    else:
+        print("\nTraining failed!")
+        sys.exit(1)

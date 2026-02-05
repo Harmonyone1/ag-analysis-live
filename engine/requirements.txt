@@ -1,0 +1,34 @@
+# Core dependencies
+tradelocker>=0.2.0
+psycopg2-binary>=2.9.9
+sqlalchemy>=2.0.0
+alembic>=1.13.0
+pandas>=2.0.0
+numpy>=1.24.0
+python-dotenv>=1.0.0
+
+# Analysis
+scipy>=1.11.0
+ta-lib>=0.4.28
+
+# AI/ML
+scikit-learn>=1.3.0
+xgboost>=2.0.0
+lightgbm>=4.0.0
+shap>=0.43.0
+joblib>=1.3.0
+
+# Async & scheduling
+asyncio>=3.4.3
+apscheduler>=3.10.0
+httpx>=0.25.0
+
+# Utilities
+pydantic>=2.5.0
+structlog>=23.2.0
+tenacity>=8.2.0
+
+# Testing
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+pytest-cov>=4.1.0

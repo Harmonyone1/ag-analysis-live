@@ -1,0 +1,95 @@
+{
+  "sessions": [
+    {
+      "session": {
+        "start_time": "2025-12-16T11:05:36.067148",
+        "end_time": "2025-12-16T11:08:44.039252",
+        "duration_minutes": 3.1328684666666664,
+        "cycles": 5,
+        "lower_thresholds": true
+      },
+      "setups": {
+        "total_found": 1,
+        "approved": 1,
+        "rejected": 0
+      },
+      "trades": {
+        "total_trades": 0,
+        "winners": 0,
+        "losers": 0,
+        "win_rate": null,
+        "total_r": 0.0,
+        "avg_r_per_trade": null,
+        "profit_factor": null,
+        "avg_winner_r": null,
+        "avg_loser_r": null,
+        "avg_duration_min": null,
+        "ai_accuracy": null
+      },
+      "ai_evaluation": {
+        "total_predictions": 0,
+        "all_trades_accuracy": null,
+        "high_probability_accuracy": null,
+        "predictions": []
+      }
+    },
+    {
+      "session": {
+        "start_time": "2025-12-16T11:10:13.077631",
+        "end_time": "2025-12-16T11:16:35.879149",
+        "duration_minutes": 6.3800253499999995,
+        "cycles": 10,
+        "lower_thresholds": true
+      },
+      "setups": {
+        "total_found": 4,
+        "approved": 4,
+        "rejected": 0
+      },
+      "trades": {
+        "total_trades": 2,
+        "winners": 1,
+        "losers": 1,
+        "win_rate": 0.5,
+        "total_r": -0.026190994954526425,
+        "avg_r_per_trade": -0.013095497477263213,
+        "profit_factor": 0.8994646753672797,
+        "avg_winner_r": 0.23432435176771688,
+        "avg_loser_r": -0.2605153467222433,
+        "avg_duration_min": 1.5,
+        "avg_mfe": 2.1,
+        "avg_mae": 1.7,
+        "ai_high_prob_trades": 0,
+        "ai_high_prob_wins": 0,
+        "ai_accuracy": 0,
+        "exit_reasons": {
+          "stop_loss": 0,
+          "take_profit": 1,
+          "trailing_stop": 0,
+          "break_even": 0,
+          "manual": 1,
+          "timeout": 0,
+          "invalidation": 0
+        }
+      },
+      "ai_evaluation": {
+        "total_predictions": 1,
+        "all_trades_accuracy": 1.0,
+        "high_probability_accuracy": null,
+        "predictions": [
+          {
+            "symbol": "USDJPY",
+            "direction": "SHORT",
+            "ai_probability": 0.4036753177642822,
+            "ai_expected_r": 8.478303909301758,
+            "actual_r": 0.23432435176771688,
+            "won": true,
+            "exit_reason": "take_profit",
+            "timestamp": "2025-12-16T11:12:57.986044"
+          }
+        ]
+      }
+    }
+  ],
+  "last_updated": "2025-12-16T11:16:35.884451"
+}

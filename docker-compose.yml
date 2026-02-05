@@ -1,0 +1,95 @@
+services:
+  db:
+    image: postgres:16
+    container_name: ag_analyzer_db
+    environment:
+      POSTGRES_DB: ${DB_NAME:-ag_analyzer}
+      POSTGRES_USER: ${DB_USER:-ag_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-ag_password}
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./supabase/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-ag_user} -d ${DB_NAME:-ag_analyzer}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  engine:
+    build:
+      context: ./engine
+      dockerfile: Dockerfile
+    container_name: ag_analyzer_engine
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      - DATABASE_URL=postgresql://${DB_USER:-ag_user}:${DB_PASSWORD:-ag_password}@db:5432/${DB_NAME:-ag_analyzer}
+      - DB_NAME=${DB_NAME:-ag_analyzer}
+      - DB_USER=${DB_USER:-ag_user}
+      - DB_PASSWORD=${DB_PASSWORD:-ag_password}
+      - DB_HOST=db
+      - DB_PORT=5432
+      - TL_ENVIRONMENT=${TL_ENVIRONMENT:-https://demo.tradelocker.com}
+      - TL_EMAIL=${TL_EMAIL}
+      - TL_PASSWORD=${TL_PASSWORD}
+      - TL_SERVER=${TL_SERVER}
+      - TL_ACC_NUM=${TL_ACC_NUM:-0}
+      - BOT_MODE=${BOT_MODE:-paper}
+      - TRADING_ENABLED=${TRADING_ENABLED:-false}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - MODEL_PATH=/app/models
+      - MAX_RISK_PER_TRADE=${MAX_RISK_PER_TRADE:-0.01}
+      - MAX_DAILY_LOSS=${MAX_DAILY_LOSS:-0.03}
+      - MAX_OPEN_POSITIONS=${MAX_OPEN_POSITIONS:-5}
+      - MAX_CORRELATED_EXPOSURE=${MAX_CORRELATED_EXPOSURE:-0.02}
+      - MIN_CONFLUENCE_SCORE=${MIN_CONFLUENCE_SCORE:-40}
+      - MIN_AI_PROBABILITY=${MIN_AI_PROBABILITY:-0.30}
+      - MIN_EXPECTED_VALUE=${MIN_EXPECTED_VALUE:-0.15}
+    volumes:
+      - ./models:/app/models
+      - ./engine/src:/app/src
+      - ./engine/run_training.py:/app/run_training.py
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: ag_analyzer_backend
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      - DATABASE_URL=postgresql://${DB_USER:-ag_user}:${DB_PASSWORD:-ag_password}@db:5432/${DB_NAME:-ag_analyzer}
+      - DB_NAME=${DB_NAME:-ag_analyzer}
+      - DB_USER=${DB_USER:-ag_user}
+      - DB_PASSWORD=${DB_PASSWORD:-ag_password}
+      - DB_HOST=db
+      - DB_PORT=5432
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000}
+      - JWT_SECRET=${JWT_SECRET:-dev_secret}
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  ui:
+    build:
+      context: ./ui
+      dockerfile: Dockerfile
+    container_name: ag_analyzer_ui
+    depends_on:
+      - backend
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - NEXT_PUBLIC_WS_URL=ws://localhost:8000
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
