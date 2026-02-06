@@ -631,7 +631,7 @@ class TradingEngine:
                         continue
 
                     # Fixed lot size
-                    position_size = Decimal("0.10")
+                    position_size = Decimal("0.20")
 
                     # Create setup for execution
                     entry_zone = (candidate.entry_zone.get("min", 0), candidate.entry_zone.get("max", 0)) if candidate.entry_zone else (0, 0)
@@ -662,7 +662,7 @@ class TradingEngine:
                         sl_dist = abs(entry_mid - float(candidate.stop_price))
                         tp_dist = abs(float(tp_price_check) - entry_mid)
                         rr_ratio = tp_dist / sl_dist if sl_dist > 0 else 0
-                        if rr_ratio < 1.5:
+                        if rr_ratio < 1.49:
                             candidate.status = "rejected"
                             print(f"[EXEC] SKIP {candidate.symbol}: R:R too low "
                                   f"({rr_ratio:.2f} < 1.50)", file=sys.stderr)
@@ -827,28 +827,60 @@ class TradingEngine:
                     logger.warning("Found orphaned broker positions",
                                   count=len(result.orphaned_broker))
 
-                # Close DB positions that were stopped out on broker
+                # Close DB positions that were closed on broker
                 if result.missing_local:
-                    logger.warning("Closing stopped-out positions in DB",
+                    logger.warning("Closing positions missing from broker",
                                   count=len(result.missing_local))
+
+                    # Look up actual close prices from broker order history
+                    close_prices = {}
+                    try:
+                        order_df = self.broker._api.get_all_orders(history=True)
+                        if order_df is not None and len(order_df) > 0:
+                            # Closing orders have isOpen == "false" and a positionId
+                            closing = order_df[
+                                (order_df["isOpen"] == "false") &
+                                (order_df["status"] == "Filled")
+                            ]
+                            for _, row in closing.iterrows():
+                                bp_id = str(int(row["positionId"]))
+                                close_prices[bp_id] = Decimal(str(row["avgPrice"]))
+                    except Exception as e:
+                        logger.warning("Could not fetch order history for PnL", error=str(e))
+
                     for pos_id in result.missing_local:
                         pos = db_pos_map.get(pos_id)
                         if pos and pos.close_time is None:
-                            # Estimate realized P&L as loss at stop
-                            if pos.current_stop_loss and pos.avg_entry_price:
+                            close_price = close_prices.get(pos.broker_position_id)
+
+                            if close_price and pos.avg_entry_price:
+                                # Use actual close price from broker
                                 if pos.side == "buy":
-                                    pnl_per_unit = pos.current_stop_loss - pos.avg_entry_price
+                                    pnl_per_unit = close_price - pos.avg_entry_price
                                 else:
-                                    pnl_per_unit = pos.avg_entry_price - pos.current_stop_loss
-                                # Pip value: ~$10/pip for 1 lot on major, ~$1000/pip for JPY
+                                    pnl_per_unit = pos.avg_entry_price - close_price
                                 if "JPY" in pos.symbol:
                                     pos.realized_pnl = pnl_per_unit * pos.quantity * Decimal("1000")
                                 else:
                                     pos.realized_pnl = pnl_per_unit * pos.quantity * Decimal("100000")
+                                logger.info("Closed position with actual price",
+                                           symbol=pos.symbol, side=pos.side,
+                                           close_price=float(close_price),
+                                           realized_pnl=float(pos.realized_pnl))
+                            elif pos.current_stop_loss and pos.avg_entry_price:
+                                # Fallback: estimate at stop loss if no close order found
+                                if pos.side == "buy":
+                                    pnl_per_unit = pos.current_stop_loss - pos.avg_entry_price
+                                else:
+                                    pnl_per_unit = pos.avg_entry_price - pos.current_stop_loss
+                                if "JPY" in pos.symbol:
+                                    pos.realized_pnl = pnl_per_unit * pos.quantity * Decimal("1000")
+                                else:
+                                    pos.realized_pnl = pnl_per_unit * pos.quantity * Decimal("100000")
+                                logger.warning("Closed position estimated at stop",
+                                              symbol=pos.symbol, side=pos.side,
+                                              realized_pnl=float(pos.realized_pnl))
                             pos.close_time = datetime.now()
-                            logger.info("Closed stopped-out position",
-                                       symbol=pos.symbol, side=pos.side,
-                                       realized_pnl=float(pos.realized_pnl) if pos.realized_pnl else 0)
 
                 session.commit()
 
