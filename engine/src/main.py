@@ -869,10 +869,10 @@ class TradingEngine:
                         sl_dist = abs(current_price - float(candidate.stop_price))
                         tp_dist = abs(float(tp_price_check) - current_price)
                         rr_ratio = tp_dist / sl_dist if sl_dist > 0 else 0
-                        if rr_ratio < 1.39:
+                        if rr_ratio < 1.29:
                             candidate.status = "rejected"
                             print(f"[EXEC] SKIP {candidate.symbol}: R:R too low "
-                                  f"({rr_ratio:.2f} < 1.40, market={current_price:.5f} entry_mid={entry_mid:.5f})",
+                                  f"({rr_ratio:.2f} < 1.30, market={current_price:.5f} entry_mid={entry_mid:.5f})",
                                   file=sys.stderr)
                             continue
 
