@@ -761,6 +761,23 @@ class TradingEngine:
         except Exception as e:
             logger.error("Failed to apply AI gate", error=str(e))
 
+    @staticmethod
+    def _get_currency_exposures(symbol: str, side: str) -> set:
+        """Decompose a forex pair + side into directional currency exposures.
+
+        buy USDJPY  → {USD_LONG, JPY_SHORT}
+        sell EURJPY → {EUR_SHORT, JPY_LONG}
+        """
+        sym = symbol.upper().replace("/", "")
+        side = side.lower()
+        if len(sym) != 6:
+            return set()
+        base, quote = sym[:3], sym[3:]
+        if side == "buy":
+            return {f"{base}_LONG", f"{quote}_SHORT"}
+        else:
+            return {f"{base}_SHORT", f"{quote}_LONG"}
+
     async def _execute_trades(self) -> None:
         """Execute approved trade candidates."""
         try:
@@ -824,6 +841,35 @@ class TradingEngine:
                         candidate.status = "rejected"
                         print(f"[EXEC] SKIP {candidate.symbol}: counter-trend setup", file=sys.stderr)
                         continue
+
+                    # --- Filter 4b: Currency conflict (no opposing exposure) ---
+                    new_exposures = self._get_currency_exposures(
+                        candidate.symbol,
+                        "buy" if candidate.direction == "LONG" else "sell",
+                    )
+                    if new_exposures:
+                        existing_exposures = set()
+                        # Broker positions (live truth)
+                        for bp in self.broker.get_positions():
+                            existing_exposures |= self._get_currency_exposures(bp.symbol, bp.side)
+                        # DB positions (covers restart/lag gaps)
+                        db_open = session.query(Position).filter(
+                            Position.close_time.is_(None)
+                        ).all()
+                        for dp in db_open:
+                            existing_exposures |= self._get_currency_exposures(dp.symbol, dp.side)
+
+                        # Conflict = same currency in opposite direction
+                        for exp in new_exposures:
+                            ccy, direction = exp.rsplit("_", 1)
+                            opposite = f"{ccy}_{'SHORT' if direction == 'LONG' else 'LONG'}"
+                            if opposite in existing_exposures:
+                                candidate.status = "rejected"
+                                print(f"[EXEC] SKIP {candidate.symbol}: currency conflict "
+                                      f"({exp} vs {opposite} already open)", file=sys.stderr)
+                                break
+                        if candidate.status == "rejected":
+                            continue
 
                     # Compute entry zone and midpoint
                     entry_zone = (candidate.entry_zone.get("min", 0), candidate.entry_zone.get("max", 0)) if candidate.entry_zone else (0, 0)
