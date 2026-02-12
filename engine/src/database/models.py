@@ -211,6 +211,11 @@ class Position(Base):
     close_time: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     close_reason: Mapped[Optional[str]] = mapped_column(String(50))  # TP_HIT, SL_HIT, MANUAL, TIMEOUT
     r_multiple: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
+    # Trade management state
+    original_stop_loss: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 8))
+    original_take_profit: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 8))
+    break_even_moved: Mapped[Optional[bool]] = mapped_column(Boolean, default=False)
+    trailing_active: Mapped[Optional[bool]] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

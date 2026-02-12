@@ -6,6 +6,7 @@ from .label_engine import LabelEngine, ExecutionConfig, LabelRecord, TradeOutcom
 from .training_pipeline import TrainingPipeline, TrainingConfig, TrainingResult
 from .backtest import BacktestEngine, BacktestConfig, BacktestResult, BacktestSample
 from .utils import pip_size, get_spread_pips, spread_in_price, SPREAD_TABLE
+from .trading_policy import TradingPolicy, PolicyConfig, PolicyResult, SessionType
 
 __all__ = [
     # Gate
@@ -20,4 +21,6 @@ __all__ = [
     "BacktestEngine", "BacktestConfig", "BacktestResult", "BacktestSample",
     # Utils
     "pip_size", "get_spread_pips", "spread_in_price", "SPREAD_TABLE",
+    # Trading Policy
+    "TradingPolicy", "PolicyConfig", "PolicyResult", "SessionType",
 ]

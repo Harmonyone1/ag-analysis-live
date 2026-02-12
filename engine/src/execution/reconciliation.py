@@ -262,7 +262,7 @@ class PositionReconciler:
             symbol=broker_position.symbol,
             side=broker_position.side,
             quantity=broker_position.quantity,
-            entry_price=broker_position.entry_price,
+            entry_price=broker_position.avg_price,
             stop_loss=broker_position.stop_loss,
             take_profit=broker_position.take_profit,
             opened_at=datetime.now(),

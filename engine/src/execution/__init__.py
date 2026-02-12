@@ -6,6 +6,7 @@ from .trade_manager import (
     TradeManager, TradeManagerConfig, PaperPosition,
     TradeResult, TradeStatus, ExitReason
 )
+from .live_trade_manager import LiveTradeManager, LiveTradeConfig
 
 __all__ = [
     "ExecutionEngine",
@@ -19,4 +20,6 @@ __all__ = [
     "TradeResult",
     "TradeStatus",
     "ExitReason",
+    "LiveTradeManager",
+    "LiveTradeConfig",
 ]

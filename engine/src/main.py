@@ -32,7 +32,7 @@ from src.analysis import MarketAnalyzer
 from src.scoring import ConfluenceScorer, TradeSetup
 from src.risk import RiskManager, RiskLimits, OpenPosition
 from src.execution import ExecutionEngine, ExecutionMode
-from src.ai import AIGate, GateConfig, GateDecisionType
+from src.ai import AIGate, GateConfig, GateDecisionType, TradingPolicy, PolicyConfig
 
 # Configure structured logging
 structlog.configure(
@@ -57,10 +57,10 @@ logger = structlog.get_logger(__name__)
 
 # Trading symbols to scan
 SYMBOLS = [
-    "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "NZDUSD", "USDCAD",
-    "EURGBP", "EURJPY", "GBPJPY", "AUDJPY", "EURAUD", "EURNZD", "GBPAUD",
-    "GBPNZD", "AUDNZD", "AUDCAD", "NZDCAD", "CADJPY", "CHFJPY",
-    "EURCAD", "EURCHF", "GBPCAD", "GBPCHF", "AUDCHF", "NZDCHF", "CADCHF"
+    "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "NZDUSD",
+    "EURGBP", "EURJPY", "EURAUD", "EURNZD", "GBPAUD",
+    "AUDNZD", "AUDCAD", "NZDCAD", "CADJPY", "CHFJPY",
+    "EURCHF", "GBPCAD", "GBPCHF", "AUDCHF", "NZDCHF", "CADCHF"
 ]
 
 
@@ -105,8 +105,14 @@ class TradingEngine:
         # Initialize broker connection
         await self._connect_broker()
 
+        # Recover orphaned positions from broker into DB
+        await self._recover_positions()
+
         # Initialize components
         await self._init_components()
+
+        # Load existing positions into risk manager
+        await self._load_existing_positions()
 
         # Start main loop
         self.running = True
@@ -151,6 +157,146 @@ class TradingEngine:
                    account_name=account.account_name,
                    balance=float(account.balance),
                    currency=account.currency)
+
+    async def _recover_positions(self) -> None:
+        """Recover orphaned positions on startup.
+
+        Compares broker positions against DB to:
+        1. Adopt broker positions not tracked in DB (orphaned after restart)
+        2. Close DB positions that were closed on broker while bot was down
+        """
+        import sys
+        try:
+            broker_positions = self.broker.get_positions()
+            broker_by_id = {str(bp.position_id): bp for bp in broker_positions}
+
+            with self.db.session() as session:
+                # Get all open DB positions
+                db_positions = session.query(Position).filter(
+                    Position.close_time.is_(None)
+                ).all()
+                db_broker_ids = {
+                    p.broker_position_id: p for p in db_positions
+                    if p.broker_position_id
+                }
+
+                # 1. Adopt orphaned broker positions (on broker but not in DB)
+                adopted = 0
+                for bp in broker_positions:
+                    bp_id_str = str(bp.position_id)
+                    if bp_id_str not in db_broker_ids:
+                        position = Position(
+                            id=uuid.uuid4(),
+                            broker_position_id=bp_id_str,
+                            candidate_id=None,
+                            symbol=bp.symbol.upper(),
+                            side=bp.side,
+                            quantity=bp.quantity,
+                            avg_entry_price=bp.avg_price,
+                            current_stop_loss=bp.stop_loss,
+                            current_take_profit=bp.take_profit,
+                            original_stop_loss=bp.stop_loss,
+                            original_take_profit=bp.take_profit,
+                            break_even_moved=False,
+                            trailing_active=False,
+                            unrealized_pnl=bp.unrealized_pnl,
+                            realized_pnl=Decimal("0"),
+                            open_time=bp.open_time,
+                        )
+                        session.add(position)
+                        adopted += 1
+                        print(f"[RECOVERY] Adopted orphaned position: "
+                              f"{bp.symbol} {bp.side} qty={bp.quantity} "
+                              f"entry={bp.avg_price} SL={bp.stop_loss} TP={bp.take_profit} "
+                              f"broker_id={bp.position_id}", file=sys.stderr)
+
+                # 2. Close DB positions missing from broker (closed while bot was down)
+                closed = 0
+                close_prices = {}
+                try:
+                    order_df = self.broker._api.get_all_orders(history=True)
+                    if order_df is not None and len(order_df) > 0:
+                        closing = order_df[
+                            (order_df["isOpen"] == "false") &
+                            (order_df["status"] == "Filled")
+                        ]
+                        for _, row in closing.iterrows():
+                            bp_id = str(int(row["positionId"]))
+                            close_prices[bp_id] = Decimal(str(row["avgPrice"]))
+                except Exception as e:
+                    logger.warning("Could not fetch order history for recovery", error=str(e))
+
+                for db_bp_id, pos in db_broker_ids.items():
+                    if db_bp_id not in broker_by_id:
+                        close_price = close_prices.get(db_bp_id)
+                        if close_price and pos.avg_entry_price:
+                            if pos.side == "buy":
+                                pnl_per_unit = close_price - pos.avg_entry_price
+                            else:
+                                pnl_per_unit = pos.avg_entry_price - close_price
+                            if "JPY" in pos.symbol:
+                                pos.realized_pnl = pnl_per_unit * pos.quantity * Decimal("1000")
+                            else:
+                                pos.realized_pnl = pnl_per_unit * pos.quantity * Decimal("100000")
+                        pos.close_time = datetime.now()
+                        closed += 1
+                        print(f"[RECOVERY] Closed missing position: "
+                              f"{pos.symbol} {pos.side} pnl={pos.realized_pnl} "
+                              f"broker_id={db_bp_id}", file=sys.stderr)
+
+                session.commit()
+
+            logger.info("Position recovery complete",
+                       broker_positions=len(broker_positions),
+                       adopted=adopted,
+                       closed=closed)
+            print(f"[RECOVERY] Complete: {len(broker_positions)} broker positions, "
+                  f"{adopted} adopted, {closed} closed", file=sys.stderr)
+
+        except Exception as e:
+            logger.error("Position recovery failed", error=str(e))
+
+    async def _load_existing_positions(self) -> None:
+        """Load existing open positions into risk manager after init.
+
+        Ensures RiskManager knows about all open positions from the first cycle,
+        preventing duplicate entries and enforcing correlation limits.
+        """
+        try:
+            broker_positions = self.broker.get_positions()
+            open_positions = []
+            for bp in broker_positions:
+                symbol = bp.symbol.upper()
+                currencies = set()
+                if len(symbol) == 6:
+                    base = symbol[:3]
+                    quote = symbol[3:]
+                    if bp.side == "buy":
+                        currencies = {f"{base}_LONG", f"{quote}_SHORT"}
+                    else:
+                        currencies = {f"{base}_SHORT", f"{quote}_LONG"}
+
+                # Calculate actual risk from stop distance
+                risk_amount = Decimal("0")
+                if bp.stop_loss and bp.avg_price:
+                    sl_dist = abs(bp.avg_price - bp.stop_loss)
+                    multiplier = Decimal("1000") if "JPY" in symbol else Decimal("100000")
+                    risk_amount = sl_dist * bp.quantity * multiplier
+
+                open_positions.append(OpenPosition(
+                    symbol=symbol,
+                    side=bp.side,
+                    size=bp.quantity,
+                    risk_amount=risk_amount,
+                    currencies=currencies,
+                ))
+
+            self.risk_manager.update_positions(open_positions)
+            logger.info("Loaded existing positions into risk manager",
+                       count=len(open_positions))
+
+        except Exception as e:
+            logger.error("Failed to load existing positions", error=str(e))
 
     async def _init_components(self) -> None:
         """Initialize analysis and trading components."""
@@ -199,6 +345,19 @@ class TradingEngine:
             logger.info("AI Gate loaded trained model", version=self.ai_gate.feature_version)
         else:
             logger.warning("AI Gate using rule-based fallback (no model loaded)")
+
+        # Initialize session-aware trading policy
+        self.trading_policy = TradingPolicy(PolicyConfig())
+        logger.info("Trading policy initialized",
+                   enabled=self.trading_policy.config.enabled)
+
+        # Initialize live trade manager (BE, trailing, time stops)
+        from src.execution.live_trade_manager import LiveTradeManager, LiveTradeConfig
+        self.trade_manager = LiveTradeManager(
+            config=LiveTradeConfig(),
+            broker=self.broker,
+        )
+        logger.info("Live trade manager initialized")
 
         logger.info("Components initialized")
 
@@ -445,10 +604,24 @@ class TradingEngine:
                             risk_amount = account.balance * risk_pct
                         except Exception:
                             risk_amount = Decimal("5")  # Fallback
+                        # Fetch live spread for risk manager filter
+                        current_spread = None
+                        typical_spread_val = None
+                        try:
+                            from src.ai.utils import get_spread_pips, pip_size as ai_pip_size
+                            quote = self.broker.get_quote(symbol)
+                            sym_pip_size = ai_pip_size(symbol)
+                            current_spread = float(quote.spread) / sym_pip_size if sym_pip_size > 0 else None
+                            typical_spread_val = get_spread_pips(symbol)
+                        except Exception:
+                            pass
+
                         risk_check = self.risk_manager.check_new_trade(
                             symbol=symbol,
                             side="buy" if setup.direction == "LONG" else "sell",
                             risk_amount=risk_amount,
+                            spread=current_spread,
+                            typical_spread=typical_spread_val,
                         )
 
                         if risk_check.passed:
@@ -555,17 +728,32 @@ class TradingEngine:
                     candidate.ai_expected_r = decision.expected_r
                     candidate.ai_approved = decision.decision == GateDecisionType.APPROVED
 
+                    # Get current time for policy evaluation
+                    from datetime import timezone
+                    utc_now = datetime.now(timezone.utc)
+                    session_type = self.trading_policy.get_session(utc_now)
+                    policy_threshold = self.trading_policy.get_threshold(utc_now)
+
                     if decision.decision == GateDecisionType.REJECTED:
                         candidate.status = "rejected"
                     elif decision.decision == GateDecisionType.APPROVED:
-                        candidate.status = "approved"
+                        # Apply session-aware trading policy on top of AI gate
+                        policy_result = self.trading_policy.evaluate(
+                            p_win=decision.probability, utc_now=utc_now
+                        )
+                        if policy_result.approved:
+                            candidate.status = "approved"
+                        else:
+                            candidate.status = "rejected"
+                            decision.reasons.extend(policy_result.reasons)
                     elif decision.decision == GateDecisionType.NEEDS_REVIEW:
                         candidate.status = "review"
 
                     import sys
                     print(f"[AI_GATE] {candidate.symbol} {candidate.direction}: "
                           f"P(win)={decision.probability:.4f} E[R]={decision.expected_r:.4f} "
-                          f"P(timeout)={decision.prob_timeout:.4f} → {decision.decision.value} "
+                          f"P(timeout)={decision.prob_timeout:.4f} → {candidate.status} "
+                          f"| session={session_type.value} thresh={policy_threshold:.3f} "
                           f"| reasons: {'; '.join(decision.reasons[:3])}", file=sys.stderr)
 
                 session.commit()
@@ -579,7 +767,14 @@ class TradingEngine:
             import sys
             print(f"[EXEC_MODE] executor.mode={self.executor.mode}, bot.mode={self.config.bot.mode}", file=sys.stderr)
 
-            # Session filter removed: model time features (hour_sin/cos) handle session awareness
+            # Block Late NY session (20:00-24:00 UTC / 3-7 PM EST)
+            # Live data: 29.2% WR, -$316 PnL — spreads blow out, signals unreliable
+            from datetime import timezone
+            utc_now = datetime.now(timezone.utc)
+            session_type = self.trading_policy.get_session(utc_now)
+            if session_type.value == "late_ny":
+                print(f"[EXEC] Skipping execution: Late NY session (UTC {utc_now.hour:02d}:00) — no new trades", file=sys.stderr)
+                return
 
             with self.db.session() as session:
                 approved = session.query(TradeCandidate).filter(
@@ -630,17 +825,29 @@ class TradingEngine:
                         print(f"[EXEC] SKIP {candidate.symbol}: counter-trend setup", file=sys.stderr)
                         continue
 
-                    # Fixed lot size
-                    position_size = Decimal("0.20")
-
-                    # Create setup for execution
+                    # Compute entry zone and midpoint
                     entry_zone = (candidate.entry_zone.get("min", 0), candidate.entry_zone.get("max", 0)) if candidate.entry_zone else (0, 0)
-
-                    # --- Filter 5: Minimum stop distance (20 pips) ---
                     entry_mid = (entry_zone[0] + entry_zone[1]) / 2
                     is_jpy = "JPY" in candidate.symbol
-                    if entry_mid > 0:
-                        stop_dist = abs(entry_mid - float(candidate.stop_price))
+
+                    # Fetch live quote — use MARKET price for R:R validation
+                    # (entry_mid is from candle analysis; actual fill will be at market)
+                    live_quote = None
+                    current_price = entry_mid  # fallback
+                    try:
+                        live_quote = self.broker.get_quote(candidate.symbol)
+                        if candidate.direction == "SHORT":
+                            current_price = float(live_quote.bid)
+                        else:
+                            current_price = float(live_quote.ask)
+                        if current_price <= 0:
+                            current_price = entry_mid
+                    except Exception:
+                        pass  # fallback to entry_mid
+
+                    # --- Filter 5: Minimum stop distance (20 pips) ---
+                    if current_price > 0:
+                        stop_dist = abs(current_price - float(candidate.stop_price))
                         min_stop_dist = 0.200 if is_jpy else 0.00200  # 20 pips minimum
                         if stop_dist < min_stop_dist:
                             candidate.status = "rejected"
@@ -658,15 +865,65 @@ class TradingEngine:
                         elif first_tp:
                             tp_price_check = float(first_tp)
 
-                    if tp_price_check and entry_mid > 0:
-                        sl_dist = abs(entry_mid - float(candidate.stop_price))
-                        tp_dist = abs(float(tp_price_check) - entry_mid)
+                    if tp_price_check and current_price > 0:
+                        sl_dist = abs(current_price - float(candidate.stop_price))
+                        tp_dist = abs(float(tp_price_check) - current_price)
                         rr_ratio = tp_dist / sl_dist if sl_dist > 0 else 0
-                        if rr_ratio < 1.49:
+                        if rr_ratio < 1.39:
                             candidate.status = "rejected"
                             print(f"[EXEC] SKIP {candidate.symbol}: R:R too low "
-                                  f"({rr_ratio:.2f} < 1.50)", file=sys.stderr)
+                                  f"({rr_ratio:.2f} < 1.40, market={current_price:.5f} entry_mid={entry_mid:.5f})",
+                                  file=sys.stderr)
                             continue
+
+                    # --- Filter 7: Spread filter (reject if spread > 3x typical) ---
+                    try:
+                        from src.ai.utils import get_spread_pips, pip_size as ai_pip_size
+                        quote = live_quote or self.broker.get_quote(candidate.symbol)
+                        current_spread_price = float(quote.spread)
+                        sym_pip_size = ai_pip_size(candidate.symbol)
+                        current_spread_pips = current_spread_price / sym_pip_size if sym_pip_size > 0 else 0
+                        typical_spread_pips = get_spread_pips(candidate.symbol)
+                        spread_multiple = current_spread_pips / typical_spread_pips if typical_spread_pips > 0 else 0
+
+                        if spread_multiple > 3.0:
+                            candidate.status = "rejected"
+                            print(f"[EXEC] SKIP {candidate.symbol}: spread too wide "
+                                  f"({current_spread_pips:.1f} pips = {spread_multiple:.1f}x typical {typical_spread_pips:.1f})",
+                                  file=sys.stderr)
+                            continue
+
+                        print(f"[SPREAD] {candidate.symbol}: {current_spread_pips:.1f} pips "
+                              f"({spread_multiple:.1f}x typical)", file=sys.stderr)
+                    except Exception as e:
+                        print(f"[SPREAD] Could not check spread for {candidate.symbol}: {e}", file=sys.stderr)
+
+                    # --- Risk-based position sizing (2% risk per trade) ---
+                    from datetime import timezone
+                    utc_now = datetime.now(timezone.utc)
+                    p_win = float(candidate.ai_confidence) if candidate.ai_confidence else 0.55
+                    policy_result = self.trading_policy.evaluate(p_win=p_win, utc_now=utc_now)
+
+                    pip_size = 0.01 if is_jpy else 0.0001
+                    stop_distance_price = abs(current_price - float(candidate.stop_price)) if current_price > 0 else 0
+                    stop_pips = stop_distance_price / pip_size if pip_size > 0 else 0
+                    # pip_value: $10/pip for standard pairs, ~$6.7/pip for JPY crosses (1000/price)
+                    pip_value = (1000.0 / current_price) if is_jpy and current_price > 0 else 10.0
+
+                    account_balance = self.risk_manager.account_balance
+                    risk_pct = 0.02  # 2% risk per trade
+                    raw_size = self.risk_manager.calculate_position_size(
+                        account_balance, risk_pct, stop_pips, pip_value
+                    )
+                    # Apply session multiplier, floor at broker min (0.01), cap at 0.10 for safety
+                    position_size = raw_size * Decimal(str(policy_result.size_multiplier))
+                    position_size = max(Decimal("0.01"), min(Decimal("0.10"), position_size))
+                    position_size = position_size.quantize(Decimal("0.01"))
+
+                    print(f"[SIZING] {candidate.symbol}: bal=${account_balance} "
+                          f"stop={stop_pips:.1f}pips pipVal=${pip_value:.2f} "
+                          f"raw={raw_size} mult={policy_result.size_multiplier} "
+                          f"final={position_size}", file=sys.stderr)
                     setup = TradeSetup(
                         symbol=candidate.symbol,
                         direction=candidate.direction,
@@ -695,6 +952,24 @@ class TradingEngine:
                     if result.success:
                         candidate.status = "executed"
 
+                        # Resolve actual position_id from order history
+                        # (order_id != position_id on TradeLocker)
+                        actual_position_id = result.broker_order_id
+                        try:
+                            import time
+                            time.sleep(0.5)
+                            order_df = self.broker._api.get_all_orders(history=True)
+                            if order_df is not None and len(order_df) > 0:
+                                order_id_int = int(result.broker_order_id)
+                                matching = order_df[order_df["id"] == order_id_int]
+                                if len(matching) > 0 and "positionId" in matching.columns:
+                                    pos_id = int(matching.iloc[0]["positionId"])
+                                    if pos_id > 0:
+                                        actual_position_id = str(pos_id)
+                                        print(f"[EXEC] Resolved position ID: order={result.broker_order_id} -> position={actual_position_id}", file=sys.stderr)
+                        except Exception as e:
+                            print(f"[EXEC] Could not resolve position ID (using order ID): {e}", file=sys.stderr)
+
                         # Create Position record
                         tp_price = None
                         if candidate.tp_targets:
@@ -706,7 +981,7 @@ class TradingEngine:
 
                         position = Position(
                             id=uuid.uuid4(),
-                            broker_position_id=result.broker_order_id,
+                            broker_position_id=actual_position_id,
                             candidate_id=candidate.id,
                             symbol=candidate.symbol,
                             side="sell" if candidate.direction == "SHORT" else "buy",
@@ -714,6 +989,10 @@ class TradingEngine:
                             avg_entry_price=Decimal(str(result.fill_price)) if result.fill_price else Decimal(str(entry_zone[0])),
                             current_stop_loss=candidate.stop_price,
                             current_take_profit=tp_price,
+                            original_stop_loss=candidate.stop_price,
+                            original_take_profit=tp_price,
+                            break_even_moved=False,
+                            trailing_active=False,
                             unrealized_pnl=Decimal("0"),
                             realized_pnl=Decimal("0"),
                             open_time=datetime.now(),
@@ -761,11 +1040,18 @@ class TradingEngine:
                     else:
                         currencies = {f"{base}_SHORT", f"{quote}_LONG"}
 
+                # Calculate actual risk from stop distance
+                risk_amount = Decimal("0")
+                if bp.stop_loss and bp.avg_price:
+                    sl_dist = abs(bp.avg_price - bp.stop_loss)
+                    multiplier = Decimal("1000") if "JPY" in symbol else Decimal("100000")
+                    risk_amount = sl_dist * bp.quantity * multiplier
+
                 open_positions.append(OpenPosition(
                     symbol=symbol,
                     side=bp.side,
                     size=bp.quantity,
-                    risk_amount=Decimal("100"),  # Would calculate
+                    risk_amount=risk_amount,
                     currencies=currencies,
                 ))
 
@@ -779,7 +1065,6 @@ class TradingEngine:
                     ).first()
 
                     if pos:
-                        pos.current_price = bp.entry_price  # Would use current price
                         pos.unrealized_pnl = bp.unrealized_pnl
 
                 session.commit()
@@ -787,6 +1072,13 @@ class TradingEngine:
             # Update account balance
             account = self.broker.get_account()
             self.risk_manager.update_account_balance(account.balance)
+
+            # Active trade management: breakeven, trailing stop, time stop
+            if self.config.bot.trading_enabled and broker_positions:
+                self.trade_manager.manage_positions(
+                    broker_positions=broker_positions,
+                    db_session_factory=self.db.session,
+                )
 
         except Exception as e:
             logger.error("Failed to monitor positions", error=str(e))
@@ -824,8 +1116,46 @@ class TradingEngine:
                 result = reconciler.reconcile(local_positions)
 
                 if result.orphaned_broker:
-                    logger.warning("Found orphaned broker positions",
-                                  count=len(result.orphaned_broker))
+                    import sys
+                    for bp in result.orphaned_broker:
+                        # Dedup: check if we already track this symbol+side (order_id vs position_id mismatch)
+                        existing = session.query(Position).filter(
+                            Position.symbol == bp.symbol.upper(),
+                            Position.side == bp.side,
+                            Position.close_time.is_(None),
+                        ).first()
+                        if existing:
+                            if existing.broker_position_id != str(bp.position_id):
+                                print(f"[RECONCILE] Fixed broker_position_id for {bp.symbol}: "
+                                      f"{existing.broker_position_id} -> {bp.position_id}", file=sys.stderr)
+                                existing.broker_position_id = str(bp.position_id)
+                            continue  # Don't create duplicate
+
+                        # Auto-adopt truly orphaned positions into DB
+                        position = Position(
+                            id=uuid.uuid4(),
+                            broker_position_id=str(bp.position_id),
+                            candidate_id=None,
+                            symbol=bp.symbol.upper(),
+                            side=bp.side,
+                            quantity=bp.quantity,
+                            avg_entry_price=bp.avg_price,
+                            current_stop_loss=bp.stop_loss,
+                            current_take_profit=bp.take_profit,
+                            original_stop_loss=bp.stop_loss,
+                            original_take_profit=bp.take_profit,
+                            break_even_moved=False,
+                            trailing_active=False,
+                            unrealized_pnl=bp.unrealized_pnl,
+                            realized_pnl=Decimal("0"),
+                            open_time=bp.open_time,
+                        )
+                        session.add(position)
+                        print(f"[RECONCILE] Adopted orphaned position: "
+                              f"{bp.symbol} {bp.side} qty={bp.quantity} "
+                              f"broker_id={bp.position_id}", file=sys.stderr)
+                    logger.info("Adopted orphaned broker positions",
+                               count=len(result.orphaned_broker))
 
                 # Close DB positions that were closed on broker
                 if result.missing_local:
@@ -851,6 +1181,20 @@ class TradingEngine:
                     for pos_id in result.missing_local:
                         pos = db_pos_map.get(pos_id)
                         if pos and pos.close_time is None:
+                            # Check if another open position exists for same symbol+side
+                            # (indicates this is a stale order-ID record, not a real closure)
+                            duplicate = session.query(Position).filter(
+                                Position.symbol == pos.symbol,
+                                Position.side == pos.side,
+                                Position.close_time.is_(None),
+                                Position.id != pos.id,
+                            ).first()
+                            if duplicate:
+                                session.delete(pos)
+                                print(f"[RECONCILE] Deleted stale order-ID record: {pos.symbol} {pos.side} "
+                                      f"broker_id={pos.broker_position_id}", file=sys.stderr)
+                                continue
+
                             close_price = close_prices.get(pos.broker_position_id)
 
                             if close_price and pos.avg_entry_price:

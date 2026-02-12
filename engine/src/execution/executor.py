@@ -240,38 +240,10 @@ class ExecutionEngine:
                 )
 
         except BrokerError as e:
-            # If TP/SL validation failed, retry without TP
+            # If TP price is invalid, the R:R is bad at current market — reject entirely
             if "TP price" in str(e) and request.take_profit is not None:
-                logger.warning("Retrying order without TP", symbol=request.symbol)
-                request.take_profit = None
-                request.take_profit_type = None
-                try:
-                    order = self.broker.place_order(request)
-                    self._pending_orders[order_id] = {
-                        "broker_order_id": order.order_id,
-                        "request": request,
-                        "placed_at": datetime.now(),
-                    }
-                    if request.order_type == "market":
-                        return ExecutionResult(
-                            success=True,
-                            order_id=order_id,
-                            broker_order_id=str(order.order_id),
-                            status=OrderStatus.FILLED,
-                            message="Order filled (no TP)",
-                            fill_price=order.price,
-                            fill_qty=order.filled_quantity,
-                        )
-                    else:
-                        return ExecutionResult(
-                            success=True,
-                            order_id=order_id,
-                            broker_order_id=str(order.order_id),
-                            status=OrderStatus.PLACED,
-                            message="Limit order placed (no TP)",
-                        )
-                except BrokerError as e2:
-                    logger.error("Retry without TP also failed", error=str(e2))
+                logger.warning("TP rejected by broker — trade not placed (R:R invalid at market price)",
+                               symbol=request.symbol, tp=str(request.take_profit))
 
             logger.error("Broker rejected order", error=str(e))
             return ExecutionResult(

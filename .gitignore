@@ -1,0 +1,32 @@
+# Environment
+.env
+.env.*
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# IDE
+.vscode/
+.idea/
+.claude/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+nul
+
+# Training data (large files)
+engine/data/*.npz
+
+# Models (large files)
+engine/models/*.pkl
+
+# Logs
+*.log

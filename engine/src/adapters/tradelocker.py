@@ -5,9 +5,13 @@ Uses the official tradelocker Python package.
 """
 
 import logging
+import warnings
 from datetime import datetime
 from decimal import Decimal
 from typing import List, Optional
+
+# Suppress noisy "Missing type specification" warnings from tradelocker_api
+warnings.filterwarnings("ignore", message="Missing type specification")
 
 import pandas as pd
 from tradelocker import TLAPI
@@ -441,6 +445,25 @@ class TradeLockerAdapter(BrokerAdapter):
             df = self._api.get_all_positions()
             positions = []
 
+            # Fetch open orders to resolve SL/TP prices from linked order IDs
+            sl_tp_prices = {}
+            try:
+                orders_df = self._api.get_all_orders(history=False)
+                if orders_df is not None and len(orders_df) > 0:
+                    for _, orow in orders_df.iterrows():
+                        oid = int(orow.get("id", 0))
+                        otype = str(orow.get("type", "")).lower()
+                        if otype == "stop":
+                            price = Decimal(str(orow.get("stopPrice", 0)))
+                            if price > 0:
+                                sl_tp_prices[oid] = price
+                        elif otype == "limit":
+                            price = Decimal(str(orow.get("price", 0)))
+                            if price > 0:
+                                sl_tp_prices[oid] = price
+            except Exception:
+                pass  # Proceed without SL/TP if orders fetch fails
+
             for _, row in df.iterrows():
                 instrument_id = int(row.get("tradableInstrumentId", 0))
                 symbol = self._api.get_symbol_name_from_instrument_id(instrument_id)
@@ -450,7 +473,17 @@ class TradeLockerAdapter(BrokerAdapter):
                     quote = self.get_quote(symbol)
                     current_price = quote.bid if row.get("side") == "buy" else quote.ask
                 except Exception:
-                    current_price = Decimal(str(row.get("price", 0)))
+                    current_price = Decimal(str(row.get("avgPrice", 0)))
+
+                # Resolve SL/TP from linked order IDs
+                sl_id = int(row.get("stopLossId", 0))
+                tp_id = int(row.get("takeProfitId", 0))
+                stop_loss = sl_tp_prices.get(sl_id)
+                take_profit = sl_tp_prices.get(tp_id)
+
+                # Parse open time from epoch ms
+                open_date_ms = int(row.get("openDate", 0))
+                open_time = datetime.fromtimestamp(open_date_ms / 1000) if open_date_ms else datetime.now()
 
                 positions.append(
                     Position(
@@ -462,9 +495,9 @@ class TradeLockerAdapter(BrokerAdapter):
                         avg_price=Decimal(str(row.get("avgPrice", 0))),
                         current_price=current_price,
                         unrealized_pnl=Decimal(str(row.get("unrealizedPl", 0))),
-                        stop_loss=Decimal(str(row.get("stopLoss", 0))) if row.get("stopLoss") else None,
-                        take_profit=Decimal(str(row.get("takeProfit", 0))) if row.get("takeProfit") else None,
-                        open_time=datetime.now(),  # TL doesn't provide this directly
+                        stop_loss=stop_loss,
+                        take_profit=take_profit,
+                        open_time=open_time,
                     )
                 )
             return positions
